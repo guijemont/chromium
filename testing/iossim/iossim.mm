@@ -380,12 +380,8 @@ int main(int argc, char* const argv[]) {
   NSString* device_name = @"iPhone 6s";
   bool wants_wipe = false;
   bool wants_print_home = false;
-  NSDictionary* simctl_list = GetSimulatorList();
-  float sdk = 0;
-  for (NSDictionary* runtime in Runtimes(simctl_list)) {
-    sdk = fmax(sdk, [runtime[@"version"] floatValue]);
-  }
-  NSString* sdk_version = [NSString stringWithFormat:@"%0.1f", sdk];
+  bool wants_print_supported_devices = false;
+  NSString* sdk_version = nil;
   NSMutableDictionary* app_env = [NSMutableDictionary dictionary];
   NSMutableArray* cmd_args = [NSMutableArray array];
   NSMutableArray* tests_filter = [NSMutableArray array];
@@ -429,8 +425,8 @@ int main(int argc, char* const argv[]) {
         wants_print_home = true;
         break;
       case 'l':
-        PrintSupportedDevices(simctl_list);
-        exit(kExitSuccess);
+        wants_print_supported_devices = true;
+        break;
       case 'h':
         PrintUsage();
         exit(kExitSuccess);
@@ -438,6 +434,21 @@ int main(int argc, char* const argv[]) {
         PrintUsage();
         exit(kExitInvalidArguments);
     }
+  }
+
+  NSDictionary* simctl_list = GetSimulatorList();
+
+  if (wants_print_supported_devices) {
+    PrintSupportedDevices(simctl_list);
+    exit(kExitSuccess);
+  }
+
+  if (!sdk_version) {
+    float sdk = 0;
+    for (NSDictionary* runtime in Runtimes(simctl_list)) {
+      sdk = fmax(sdk, [runtime[@"version"] floatValue]);
+    }
+    sdk_version = [NSString stringWithFormat:@"%0.1f", sdk];
   }
 
   if (udid == nil) {
