@@ -30,7 +30,9 @@ void PrintUsage() {
       "  -p  Print the device's home directory, does not run a test.\n"
       "  -s  Specifies the SDK version to use (e.g '9.3'). Will use system "
       "default if not specified.\n"
-      "  -v  Be more verbose, showing all the xcrun commands we call\n");
+      "  -v  Be more verbose, showing all the xcrun commands we call\n"
+      "  -k  When to kill the iOS Simulator : before, after, both, never "
+      "(default: both)\n");
 }
 
 // Exit status codes.
@@ -50,6 +52,13 @@ void LogError(NSString* format, ...) {
 }
 
 }
+
+typedef enum {
+  KILL_NEVER = 0,
+  KILL_BEFORE = 1 << 0,
+  KILL_AFTER = 1 << 1,
+  KILL_BOTH = KILL_BEFORE | KILL_AFTER,
+} SimulatorKill;
 
 // See https://stackoverflow.com/a/51895129 and
 // https://github.com/facebook/xctool/pull/159/files.
@@ -397,9 +406,10 @@ int main(int argc, char* const argv[]) {
   NSMutableArray* cmd_args = [NSMutableArray array];
   NSMutableArray* tests_filter = [NSMutableArray array];
   bool verbose_commands = false;
+  SimulatorKill kill_simulator = KILL_BOTH;
 
   int c;
-  while ((c = getopt(argc, argv, "hs:d:u:t:e:c:pwlv")) != -1) {
+  while ((c = getopt(argc, argv, "hs:d:u:t:e:c:pwlvk:")) != -1) {
     switch (c) {
       case 's':
         sdk_version = @(optarg);
@@ -442,6 +452,21 @@ int main(int argc, char* const argv[]) {
       case 'v':
         verbose_commands = true;
         break;
+      case 'k': {
+        NSString* cmd_arg = @(optarg);
+        if ([cmd_arg isEqualToString:@"before"]) {
+          kill_simulator = KILL_BEFORE;
+        } else if ([cmd_arg isEqualToString:@"after"]) {
+          kill_simulator = KILL_AFTER;
+        } else if ([cmd_arg isEqualToString:@"both"]) {
+          kill_simulator = KILL_BOTH;
+        } else if ([cmd_arg isEqualToString:@"never"]) {
+          kill_simulator = KILL_NEVER;
+        } else {
+          PrintUsage();
+          exit(kExitInvalidArguments);
+        }
+      } break;
       case 'h':
         PrintUsage();
         exit(kExitSuccess);
@@ -493,7 +518,9 @@ int main(int argc, char* const argv[]) {
     exit(kExitSuccess);
   }
 
-  KillSimulator(verbose_commands);
+  if (kill_simulator & KILL_BEFORE) {
+    KillSimulator(verbose_commands);
+  }
   if (wants_wipe) {
     WipeDevice(udid, verbose_commands);
     printf("Device wiped.\n");
@@ -530,6 +557,8 @@ int main(int argc, char* const argv[]) {
 
   int return_code = RunApplication(app_path, xctest_path, udid, app_env,
                                    cmd_args, tests_filter, verbose_commands);
-  KillSimulator(verbose_commands);
+  if (kill_simulator & KILL_AFTER) {
+    KillSimulator(verbose_commands);
+  }
   return return_code;
 }
