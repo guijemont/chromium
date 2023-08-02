@@ -32,7 +32,9 @@ void PrintUsage() {
       "default if not specified.\n"
       "  -v  Be more verbose, showing all the xcrun commands we call\n"
       "  -k  When to kill the iOS Simulator : before, after, both, never "
-      "(default: both)\n");
+      "(default: both)\n"
+      "  -i  Use iossim instead of xcodebuild (disables all xctest "
+      "features)\n");
 }
 
 // Exit status codes.
@@ -299,13 +301,69 @@ void KillSimulator(bool verbose) {
   [task run:verbose];
 }
 
+NSString* getAppBundleID(NSString* app_path) {
+  NSString* plist_path =
+      [NSString pathWithComponents:@[ app_path, @"Info.plist" ]];
+  NSData* raw_data = [NSData dataWithContentsOfFile:plist_path];
+  NSError* error = nil;
+  NSDictionary* dict =
+      [NSPropertyListSerialization propertyListWithData:raw_data
+                                                options:NSPropertyListImmutable
+                                                 format:nil
+                                                  error:&error];
+  return dict[@"CFBundleIdentifier"];
+}
+
+int simctl(NSArray* arguments, bool verbose) {
+  XCRunTask* task = [[XCRunTask alloc]
+      initWithArguments:[@[ @"simctl" ]
+                            arrayByAddingObjectsFromArray:arguments]];
+  [task run:verbose];
+  int ret = [task terminationStatus];
+  if (ret) {
+    fprintf(stderr, "Warning: the following command failed: xcrun simctl %s",
+            [[arguments componentsJoinedByString:@" "] UTF8String]);
+  }
+  return ret;
+}
+
+bool isSimDeviceBooted(NSDictionary* simctl_list, NSString* udid) {
+  for (NSString* sdk in simctl_list[@"devices"]) {
+    for (NSDictionary* device in simctl_list[@"devices"][sdk]) {
+      if ([device[@"udid"] isEqualToString:udid]) {
+        if ([device[@"state"] isEqualToString:@"Booted"]) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 int RunApplication(NSString* app_path,
                    NSString* xctest_path,
                    NSString* udid,
                    NSMutableDictionary* app_env,
                    NSMutableArray* cmd_args,
                    NSMutableArray* tests_filter,
+                   bool simple_iossim,
+                   bool boot_simulator,
                    bool verbose) {
+  if (simple_iossim) {
+    NSString* bundle_id = getAppBundleID(app_path);
+
+    if (boot_simulator) {
+      simctl(@[ @"boot", udid ], verbose);
+    }
+    simctl(@[ @"uninstall", udid, bundle_id ], verbose);
+    simctl(@[ @"install", udid, app_path ], verbose);
+
+    NSArray* command = [@[
+      @"launch", @"--console", @"--terminate-running-process", udid, bundle_id
+    ] arrayByAddingObjectsFromArray:cmd_args];
+    return simctl(command, verbose);
+  }
+
   NSString* tempFilePath = [NSTemporaryDirectory()
       stringByAppendingPathComponent:NSUUID.UUID.UUIDString];
   [NSFileManager.defaultManager createFileAtPath:tempFilePath
@@ -407,9 +465,10 @@ int main(int argc, char* const argv[]) {
   NSMutableArray* tests_filter = [NSMutableArray array];
   bool verbose_commands = false;
   SimulatorKill kill_simulator = KILL_BOTH;
+  bool wants_simple_iossim = false;
 
   int c;
-  while ((c = getopt(argc, argv, "hs:d:u:t:e:c:pwlvk:")) != -1) {
+  while ((c = getopt(argc, argv, "hs:d:u:t:e:c:pwlvk:i")) != -1) {
     switch (c) {
       case 's':
         sdk_version = @(optarg);
@@ -467,6 +526,9 @@ int main(int argc, char* const argv[]) {
           exit(kExitInvalidArguments);
         }
       } break;
+      case 'i':
+        wants_simple_iossim = true;
+        break;
       case 'h':
         PrintUsage();
         exit(kExitSuccess);
@@ -474,6 +536,11 @@ int main(int argc, char* const argv[]) {
         PrintUsage();
         exit(kExitInvalidArguments);
     }
+  }
+
+  if (wants_simple_iossim && [tests_filter count]) {
+    fprintf(stderr,
+            "Warning: tests specified with -t are ignored when using -i");
   }
 
   NSDictionary* simctl_list = GetSimulatorList(verbose_commands);
@@ -540,13 +607,17 @@ int main(int argc, char* const argv[]) {
     }
 
     if (++optind < argc) {
-      NSString* unresolved_xctest_path = [NSFileManager.defaultManager
-          stringWithFileSystemRepresentation:argv[optind]
-                                      length:strlen(argv[optind])];
-      xctest_path = ResolvePath(unresolved_xctest_path);
-      if (!xctest_path) {
-        LogError(@"Unable to resolve xctest_path %@", unresolved_xctest_path);
-        exit(kExitInvalidArguments);
+      if (wants_simple_iossim) {
+        fprintf(stderr, "Warning: xctest_path ignored when using -i");
+      } else {
+        NSString* unresolved_xctest_path = [NSFileManager.defaultManager
+            stringWithFileSystemRepresentation:argv[optind]
+                                        length:strlen(argv[optind])];
+        xctest_path = ResolvePath(unresolved_xctest_path);
+        if (!xctest_path) {
+          LogError(@"Unable to resolve xctest_path %@", unresolved_xctest_path);
+          exit(kExitInvalidArguments);
+        }
       }
     }
   } else {
@@ -555,8 +626,11 @@ int main(int argc, char* const argv[]) {
     exit(kExitInvalidArguments);
   }
 
+  bool boot_simulator = !isSimDeviceBooted(simctl_list, udid);
+
   int return_code = RunApplication(app_path, xctest_path, udid, app_env,
-                                   cmd_args, tests_filter, verbose_commands);
+                                   cmd_args, tests_filter, wants_simple_iossim,
+                                   boot_simulator, verbose_commands);
   if (kill_simulator & KILL_AFTER) {
     KillSimulator(verbose_commands);
   }
